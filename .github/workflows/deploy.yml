@@ -1,0 +1,42 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Deploy only fires if FLY_API_TOKEN is configured. Until then the job is a
+# no-op so initial scaffolding doesn't trip CI red.
+jobs:
+  deploy:
+    name: Fly.io deploy
+    runs-on: ubuntu-latest
+    if: github.repository == 'ramphias/uod-backend'
+    concurrency:
+      group: deploy-${{ github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Skip when FLY_API_TOKEN is missing
+        id: gate
+        run: |
+          if [ -z "${{ secrets.FLY_API_TOKEN }}" ]; then
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping Fly.io deploy — FLY_API_TOKEN secret not set."
+          else
+            echo "missing=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+        if: steps.gate.outputs.missing == 'false'
+
+      - name: Deploy
+        if: steps.gate.outputs.missing == 'false'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl deploy --remote-only
