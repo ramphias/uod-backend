@@ -51,5 +51,11 @@ extend-immutable-calls = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Share one event loop across the whole test session so the asyncpg
+# engine created once in conftest doesn't get re-attached to a fresh
+# loop on every test (which raises "got Future attached to a different
+# loop" with pytest-asyncio >= 1.0).
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
 python_files = ["test_*.py"]

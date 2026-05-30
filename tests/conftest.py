@@ -85,13 +85,6 @@ def postgres_url() -> Iterator[str]:
 
 
 @pytest.fixture(scope="session")
-def event_loop() -> Iterator[asyncio.AbstractEventLoop]:
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
-
-
-@pytest.fixture(scope="session")
 async def _migrated_db(postgres_url: str) -> AsyncIterator[None]:
     """Apply all Alembic migrations once per test session."""
     from alembic.config import Config
@@ -110,35 +103,49 @@ async def _migrated_db(postgres_url: str) -> AsyncIterator[None]:
     yield
 
 
-@pytest.fixture
-async def session(_migrated_db: None, postgres_url: str) -> AsyncIterator[AsyncSession]:
-    """A clean session per test — wipes data after each test for isolation."""
+@pytest.fixture(scope="session")
+async def _engine(_migrated_db: None, postgres_url: str):
+    """One async engine for the whole test session — matches the session-
+    scoped event loop set in pyproject.toml.
+    """
     engine = create_async_engine(postgres_url)
-    Session = async_sessionmaker(engine, expire_on_commit=False)
-    async with Session() as s:
-        yield s
-    # truncate state for next test
-    async with engine.begin() as conn:
-        from sqlalchemy import text
+    yield engine
+    await engine.dispose()
 
+
+async def _truncate_all(engine) -> None:
+    from sqlalchemy import text
+
+    async with engine.begin() as conn:
         await conn.execute(
             text(
                 "TRUNCATE instance_relations, audit_log, instances, harvest_jobs "
                 "RESTART IDENTITY CASCADE"
             )
         )
-    await engine.dispose()
 
 
 @pytest.fixture
-async def client(_migrated_db: None) -> AsyncIterator[AsyncClient]:
-    """ASGI test client — uses the real app, real DB."""
+async def session(_engine) -> AsyncIterator[AsyncSession]:
+    """Clean session per test, with a TRUNCATE between tests."""
+    Session = async_sessionmaker(_engine, expire_on_commit=False)
+    async with Session() as s:
+        yield s
+    await _truncate_all(_engine)
+
+
+@pytest.fixture
+async def client(_engine) -> AsyncIterator[AsyncClient]:
+    """ASGI test client. The app uses its own get_engine(), which is the
+    same DATABASE_URL we migrated, so it sees the migrated schema.
+    """
     from app.main import create_app
 
     app = create_app()
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
+    await _truncate_all(_engine)
 
 
 # ── auth helpers ────────────────────────────────────────────────────────
